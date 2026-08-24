@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Refresh the day's quote wallpaper at each local midnight.
+# Apply today's quote wallpaper now, then refresh it at each local midnight.
 # Launched once at login from the Hyprland autostart, so it inherits the
-# Wayland/Hyprland session env needed to relaunch hyprpaper.
+# Wayland/Hyprland session env needed to set the wallpaper.
+#
+# Wallpaper backend is auto-detected, in order: Omarchy's native
+# `omarchy-theme-bg-set`, then hyprpaper (kill + relaunch — IPC reload is
+# unreliable in practice), then swaybg. Pick whichever your setup has.
 set -uo pipefail
 
 # Singleton: never run two copies (e.g. after `hyprctl reload`).
@@ -9,7 +13,40 @@ exec 9>"$HOME/.cache/hypr/.quote-daemon.lock" 2>/dev/null || true
 flock -n 9 2>/dev/null || exit 0
 
 GEN="$HOME/.local/bin/wallpaper-quote"
+OUT="$HOME/.cache/hypr/wallpaper.jpg"
 CONF="$HOME/.config/hypr/hyprpaper.conf"
+
+set_wallpaper() {
+  local img="$1"
+
+  if command -v omarchy-theme-bg-set >/dev/null 2>&1; then
+    omarchy-theme-bg-set "$img"
+    return
+  fi
+
+  if command -v hyprctl >/dev/null 2>&1 && pgrep -x hyprpaper >/dev/null 2>&1; then
+    pkill -x hyprpaper 2>/dev/null || true
+    for i in $(seq 1 200); do pgrep -x hyprpaper >/dev/null || break; done
+    setsid -f hyprpaper -c "$CONF" 2>/dev/null || true
+    return
+  fi
+
+  if command -v swaybg >/dev/null 2>&1; then
+    pkill -x swaybg 2>/dev/null || true
+    setsid -f swaybg -i "$img" -m fill >/dev/null 2>&1 || true
+    return
+  fi
+
+  echo "wallpaper-quote-daemon: no supported wallpaper backend found (omarchy-theme-bg-set / hyprpaper / swaybg)" >&2
+  return 1
+}
+
+apply() {
+  "$GEN" || return
+  set_wallpaper "$OUT" || true
+}
+
+apply
 
 while true; do
     now=$(date +%s)
@@ -18,8 +55,5 @@ while true; do
     [ "$secs" -lt 30 ] && secs=30
     sleep "$secs"
 
-    "$GEN" || true                            # render the new day's quote
-    pkill -x hyprpaper 2>/dev/null || true     # reload hyprpaper (ipc reload is unreliable)
-    for i in $(seq 1 200); do pgrep -x hyprpaper >/dev/null || break; done
-    setsid -f hyprpaper -c "$CONF" 2>/dev/null || true
+    apply
 done

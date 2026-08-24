@@ -9,13 +9,16 @@ midnight. It sits behind your windows, just like a wallpaper.
 
 - **`wallpaper-quote`** picks the day's line from `quotes.txt` (by day-of-year) and
   composites it onto a base image with ImageMagick → `~/.cache/hypr/wallpaper.jpg`.
-- **hyprpaper** displays that image, with its own `splash` disabled.
-- **`wallpaper-quote-daemon`** regenerates + reloads at each local midnight, so the
-  quote advances even if you never log out. (Singleton-locked.)
+- **`wallpaper-quote-daemon`** applies that image now, then regenerates + reapplies
+  it at each local midnight, so the quote advances even if you never log out.
+  (Singleton-locked.) It auto-detects how to set the wallpaper: **Omarchy**'s native
+  `omarchy-theme-bg-set` if present, otherwise **hyprpaper** (kill + relaunch — IPC
+  reload is unreliable in practice), otherwise **swaybg**.
 
 ## Requirements
 
-- [Hyprland](https://hypr.land) + `hyprpaper`
+- [Hyprland](https://hypr.land) — with either [Omarchy](https://omarchy.org),
+  `hyprpaper`, or `swaybg` for displaying the wallpaper
 - ImageMagick (`magick`)
 - A font (default: JetBrainsMono Nerd Font — change `FONT` in `wallpaper-quote`)
 
@@ -28,8 +31,10 @@ install -Dm644 quotes.txt             ~/.config/hypr/quotes.txt
 ```
 
 1. Set your **base image** and **font** at the top of `wallpaper-quote` (`BASE`, `FONT`).
-2. Point hyprpaper at the generated image and disable its splash — `~/.config/hypr/hyprpaper.conf`
-   (hyprpaper needs an **absolute** path, so write out your home directory):
+2. **On Omarchy:** nothing else to configure — `omarchy-theme-bg-set` is used
+   automatically. **On plain Hyprland with hyprpaper:** point it at the generated
+   image and disable its splash — `~/.config/hypr/hyprpaper.conf` (hyprpaper needs
+   an **absolute** path, so write out your home directory):
 
    ```ini
    splash = false
@@ -41,10 +46,10 @@ install -Dm644 quotes.txt             ~/.config/hypr/quotes.txt
    }
    ```
 
-3. Generate at login and start the daily daemon — in your Hyprland config:
+3. Start the daemon at login — in your Hyprland config. It applies the current
+   day's quote immediately, then keeps it fresh at midnight:
 
    ```ini
-   exec-once = bash -lc '~/.local/bin/wallpaper-quote; pkill hyprpaper; sleep 1; hyprpaper -c ~/.config/hypr/hyprpaper.conf'
    exec-once = ~/.local/bin/wallpaper-quote-daemon
    ```
 
