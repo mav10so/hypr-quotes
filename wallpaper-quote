@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Compose the day's quote onto the base wallpaper (replaces Hyprland's built-in splash).
-# Output is what hyprpaper displays. Runs at login + at midnight (see autostart / daemon).
+# Compose the day's quote onto the base wallpaper and print the path of the
+# image written; wallpaper-quote-daemon puts it on screen.
 set -euo pipefail
 
 # --- config (tweak to taste) ---
-BASE="/usr/share/backgrounds/3qwx1v.jpg"
-QUOTES="$HOME/.config/hypr/quotes.txt"
-OUT="$HOME/.cache/hypr/wallpaper.jpg"
-FONT="$HOME/.local/share/fonts/JetBrainsMonoNLNerdFont-Light.ttf"
+BASE="/usr/share/omarchy/themes/last-horizon/backgrounds/1-eyes-wide.jpg"
+# Use a date-stamped path. Omarchy Shell caches an image by path, so overwriting
+# one fixed filename can leave yesterday's texture visible after a refresh.
+OUT="$HOME/.cache/hypr/wallpaper-$(date +%F).jpg"
+FONT="/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf"
 POINTSIZE=34            # text size (on the 2160px-tall base; ~24px on screen)
 BOTTOM_OFFSET=40        # pixels up from the bottom edge
 TEXT_OPACITY=0.85       # 0.0 - 1.0
@@ -15,18 +16,15 @@ TEXT_OPACITY=0.85       # 0.0 - 1.0
 
 mkdir -p "$(dirname "$OUT")"
 
-# Pick TODAY'S quote by day-of-year: stable all day, cycles through the year.
-mapfile -t POOL < <(grep -vhE '^\s*(#|$)' "$QUOTES" 2>/dev/null)
-N=${#POOL[@]}
-if [ "$N" -gt 0 ]; then
-  DOY=$((10#$(date +%j)))            # 001..366 -> 1..366
-  QUOTE="${POOL[$(( (DOY-1) % N ))]}"
-else
-  QUOTE="stay hydrated"
-fi
+# Same day-of-year pick used by the terminal greeting, so both always agree.
+QUOTE="$("$HOME/.local/bin/quote-of-the-day")"
 
 magick "$BASE" \
   -gravity south -font "$FONT" -pointsize "$POINTSIZE" \
   -fill "rgba(0,0,0,0.55)"                 -annotate "+2+$((BOTTOM_OFFSET-2))" "$QUOTE" \
   -fill "rgba(255,255,255,$TEXT_OPACITY)"  -annotate "+0+$BOTTOM_OFFSET"       "$QUOTE" \
   -quality 92 "$OUT"
+
+# Report the file we wrote, so callers never have to re-derive the date
+# themselves (and can't disagree with us across a midnight rollover).
+echo "$OUT"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Print today's quote (same day-of-year pick used by wallpaper-quote), so the
+# wallpaper and the terminal greeting always agree.
+set -euo pipefail
+
+QUOTES="$HOME/.config/hypr/quotes.txt"
+
+mapfile -t POOL < <(grep -vhE '^\s*(#|$)' "$QUOTES" 2>/dev/null)
+N=${#POOL[@]}
+if [ "$N" -gt 0 ]; then
+  DOY=$((10#$(date +%j)))            # 001..366 -> 1..366
+  echo "${POOL[$(( (DOY-1) % N ))]}"
+else
+  echo "stay hydrated"
+fi
