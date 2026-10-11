@@ -1,25 +1,119 @@
 #!/usr/bin/env bash
-# Refresh the day's quote wallpaper at each local midnight.
-# Launched once at login from the Hyprland autostart, so it inherits the
-# Wayland/Hyprland session env needed to relaunch hyprpaper.
+# Apply today's quote wallpaper now, then refresh it when the date rolls over
+# or when a new background is picked in Omarchy (switcher or theme change):
+# the picked image becomes the new base and gets the quote within seconds.
+# On Omarchy this applies via `omarchy-theme-bg-set` (the shell's native
+# background IPC); on a plain Hyprland setup (no Omarchy shell) it falls back
+# to hyprpaper's IPC reload, or swaybg as a last resort — so the same script
+# works either way.
 set -uo pipefail
 
 # Singleton: never run two copies (e.g. after `hyprctl reload`).
+# The lock lives in ~/.cache/hypr, which a fresh install does not have yet;
+# without it the open fails, flock fails, and the daemon quietly exits.
+mkdir -p "$HOME/.cache/hypr"
 exec 9>"$HOME/.cache/hypr/.quote-daemon.lock" 2>/dev/null || true
 flock -n 9 2>/dev/null || exit 0
 
 GEN="$HOME/.local/bin/wallpaper-quote"
-CONF="$HOME/.config/hypr/hyprpaper.conf"
+SAVED_BASE="$HOME/.local/state/wallpaper-quote/base"   # read by $GEN
+LINK="$HOME/.local/state/omarchy/current/background"   # Omarchy's current background
+OUT_DIR="$(readlink -f "$HOME/.cache/hypr")"           # where $GEN writes renders
+
+# Poll interval. Short so a newly picked background gets its quote almost at
+# once. It also matters for midnight: `sleep` counts *awake* time only, so a
+# long sleep aimed at midnight would slip by the whole suspend duration.
+POLL=2
+
+set_wallpaper() {
+  local img="$1"
+
+  if command -v omarchy-theme-bg-set >/dev/null 2>&1; then
+    omarchy-theme-bg-set "$img"
+    return
+  fi
+
+  if command -v hyprctl >/dev/null 2>&1 && pgrep -x hyprpaper >/dev/null 2>&1; then
+    # Plain Hyprland + hyprpaper: reload in place via IPC, no restart needed.
+    hyprctl hyprpaper unload all >/dev/null 2>&1 || true
+    hyprctl hyprpaper preload "$img" >/dev/null 2>&1 || true
+    hyprctl hyprpaper wallpaper ",$img" >/dev/null 2>&1 || true
+    return
+  fi
+
+  if command -v swaybg >/dev/null 2>&1; then
+    pkill -x swaybg 2>/dev/null || true
+    setsid swaybg -i "$img" -m fill >/dev/null 2>&1 &
+    disown
+    return
+  fi
+
+  echo "wallpaper-quote-daemon: no supported wallpaper backend found (omarchy-theme-bg-set / hyprpaper / swaybg)" >&2
+  return 1
+}
+
+# Print the background the user picked in Omarchy, if the current one is not
+# one of our own renders. Fails when there is nothing new to adopt.
+picked() {
+  local target
+  target="$(readlink -f "$LINK" 2>/dev/null)" || return 1
+  [[ -f $target && $target != "$OUT_DIR"/wallpaper-*.jpg ]] || return 1
+  printf '%s\n' "$target"
+}
+
+APPLIED=""   # date (%F) whose quote is currently on screen
+
+# apply [base]: render today's quote (onto base, if given), put it on screen,
+# and remember base for later days.
+apply() {
+  local before out
+  before="$(readlink -f "$LINK" 2>/dev/null)"
+
+  # wallpaper-quote writes a uniquely named file and prints its path; changing
+  # that path is what makes Omarchy Shell reload the texture instead of
+  # retaining a cached one.
+  out="$("$GEN" "$@")" && [ -n "$out" ] || return 1
+
+  # A background picked while we were rendering wins: drop this render and
+  # let the next poll adopt the new pick instead of clobbering it.
+  [ "$(readlink -f "$LINK" 2>/dev/null)" = "$before" ] || return 0
+
+  set_wallpaper "$out" || return 1
+
+  if [ $# -gt 0 ]; then
+    # Keep a copy, not the path: a theme's backgrounds directory is replaced
+    # on every theme switch.
+    mkdir -p "${SAVED_BASE%/*}"
+    cp -f "$1" "$SAVED_BASE.tmp" && mv -f "$SAVED_BASE.tmp" "$SAVED_BASE"
+  fi
+
+  # Take the date from the name $GEN actually wrote so the two of us can never
+  # disagree about which day is on screen.
+  local day="${out##*/wallpaper-}"
+  APPLIED="${day:0:10}"
+
+  # Renders would otherwise accumulate forever.
+  find "$OUT_DIR" -maxdepth 1 -name 'wallpaper-????-??-??*.jpg' \
+    -mtime +2 -delete 2>/dev/null || true
+}
+
+FAILED=""     # a picked background $GEN couldn't render; not retried every poll
+RETRY_AT=0    # $SECONDS before which a failed daily refresh isn't retried
 
 while true; do
-    now=$(date +%s)
-    next=$(date -d 'tomorrow 00:00:05' +%s)   # just after local midnight
-    secs=$(( next - now ))
-    [ "$secs" -lt 30 ] && secs=30
-    sleep "$secs"
+  if pick="$(picked)"; then
+    if [ "$pick" != "$FAILED" ]; then
+      apply "$pick" && FAILED="" || FAILED="$pick"
+    fi
+  else
+    # Compare against the date actually on screen rather than tracking
+    # midnight. This re-applies after a resume, and after a manual clock or
+    # timezone change, without firing twice a day.
+    printf -v today '%(%F)T' -1
+    if [ "$today" != "$APPLIED" ] && [ "$SECONDS" -ge "$RETRY_AT" ]; then
+      apply || RETRY_AT=$(( SECONDS + 300 ))
+    fi
+  fi
 
-    "$GEN" || true                            # render the new day's quote
-    pkill -x hyprpaper 2>/dev/null || true     # reload hyprpaper (ipc reload is unreliable)
-    for i in $(seq 1 200); do pgrep -x hyprpaper >/dev/null || break; done
-    setsid -f hyprpaper -c "$CONF" 2>/dev/null || true
+  sleep "$POLL" 9<&-
 done

@@ -1,32 +1,60 @@
 #!/usr/bin/env bash
-# Compose the day's quote onto the base wallpaper (replaces Hyprland's built-in splash).
-# Output is what hyprpaper displays. Runs at login + at midnight (see autostart / daemon).
+# Compose the day's quote onto the base wallpaper and print the path of the
+# image written; wallpaper-quote-daemon puts it on screen.
+#
+# Usage: wallpaper-quote [base-image]
+# Without an argument the base is the background last picked in Omarchy
+# (saved by wallpaper-quote-daemon), else DEFAULT_BASE.
 set -euo pipefail
 
 # --- config (tweak to taste) ---
-BASE="/usr/share/backgrounds/3qwx1v.jpg"
-QUOTES="$HOME/.config/hypr/quotes.txt"
-OUT="$HOME/.cache/hypr/wallpaper.jpg"
-FONT="$HOME/.local/share/fonts/JetBrainsMonoNLNerdFont-Light.ttf"
-POINTSIZE=34            # text size (on the 2160px-tall base; ~24px on screen)
-BOTTOM_OFFSET=40        # pixels up from the bottom edge
+DEFAULT_BASE="/usr/share/omarchy/themes/last-horizon/backgrounds/1-eyes-wide.jpg"
+SAVED_BASE="$HOME/.local/state/wallpaper-quote/base"
+# Date-stamped *and* unique per render. Omarchy Shell caches an image by path,
+# so reusing a filename can leave an older texture visible after a refresh.
+OUT="$HOME/.cache/hypr/wallpaper-$(date +%F-%H%M%S).jpg"
+FONT="/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf"
+# Sizes are in screen pixels on a 1440px-tall display; scaled for others.
+POINTSIZE=28            # text size
+BOTTOM_OFFSET=32        # pixels up from the bottom edge
+SHADOW=2                # drop-shadow offset
 TEXT_OPACITY=0.85       # 0.0 - 1.0
 # --------------------------------
 
-mkdir -p "$(dirname "$OUT")"
-
-# Pick TODAY'S quote by day-of-year: stable all day, cycles through the year.
-mapfile -t POOL < <(grep -vhE '^\s*(#|$)' "$QUOTES" 2>/dev/null)
-N=${#POOL[@]}
-if [ "$N" -gt 0 ]; then
-  DOY=$((10#$(date +%j)))            # 001..366 -> 1..366
-  QUOTE="${POOL[$(( (DOY-1) % N ))]}"
+if [ $# -gt 0 ]; then
+  BASE="$1"
+elif [ -f "$SAVED_BASE" ]; then
+  BASE="$SAVED_BASE"
 else
-  QUOTE="stay hydrated"
+  BASE="$DEFAULT_BASE"
 fi
 
-magick "$BASE" \
-  -gravity south -font "$FONT" -pointsize "$POINTSIZE" \
-  -fill "rgba(0,0,0,0.55)"                 -annotate "+2+$((BOTTOM_OFFSET-2))" "$QUOTE" \
-  -fill "rgba(255,255,255,$TEXT_OPACITY)"  -annotate "+0+$BOTTOM_OFFSET"       "$QUOTE" \
+mkdir -p "$(dirname "$OUT")"
+
+# Render at the largest monitor's resolution. The shell crop-fills the screen,
+# so a base of another size or aspect would otherwise shrink the text or crop
+# it off the bottom edge. Without Hyprland, keep the base's own size.
+SIZE="$(hyprctl monitors -j 2>/dev/null \
+  | jq -r 'max_by(.width * .height) | "\(.width)x\(.height)"' 2>/dev/null || true)"
+if [[ $SIZE =~ ^[0-9]+x[0-9]+$ ]]; then
+  FIT=(-resize "$SIZE^" -gravity center -extent "$SIZE")
+  H=${SIZE#*x}
+else
+  FIT=()
+  H="$(magick identify -format '%h' "$BASE[0]")"
+fi
+px() { echo $(( ($1 * H + 720) / 1440 )); }
+
+# Same day-of-year pick used by the terminal greeting, so both always agree.
+QUOTE="$("$HOME/.local/bin/quote-of-the-day")"
+
+# [0]: first frame only, in case the base is an animated gif.
+magick "$BASE[0]" "${FIT[@]}" \
+  -gravity south -font "$FONT" -pointsize "$(px "$POINTSIZE")" \
+  -fill "rgba(0,0,0,0.55)"                 -annotate "+$(px "$SHADOW")+$(px $((BOTTOM_OFFSET - SHADOW)))" "$QUOTE" \
+  -fill "rgba(255,255,255,$TEXT_OPACITY)"  -annotate "+0+$(px "$BOTTOM_OFFSET")"                         "$QUOTE" \
   -quality 92 "$OUT"
+
+# Report the file we wrote, so callers never have to re-derive the date
+# themselves (and can't disagree with us across a midnight rollover).
+echo "$OUT"
